@@ -1,4 +1,4 @@
-module scheduler
+module github.com/Boklazhenko/scheduler
 
 go 1.14
 
