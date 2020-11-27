@@ -41,7 +41,12 @@ func New() *Scheduler {
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
-	s.timer = time.NewTimer(inactivityInterval)
+	i := s.set.Iterator()
+	if i.First() {
+		s.timer = time.NewTimer(time.Duration(i.Value().(*Job).t - time.Now().UnixNano()))
+	} else {
+		s.timer = time.NewTimer(inactivityInterval)
+	}
 	for {
 		select {
 		case now := <-s.timer.C:
