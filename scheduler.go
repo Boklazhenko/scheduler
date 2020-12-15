@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"github.com/emirpasic/gods/sets/treeset"
+	"sync/atomic"
 	"time"
 )
 
@@ -10,11 +11,12 @@ const chanBuffSize = 1000
 const inactivityInterval = time.Hour
 
 type Job struct {
-	t     int64
-	i     time.Duration
-	j     func()
-	s     *Scheduler
-	every bool
+	t        int64
+	i        time.Duration
+	j        func()
+	s        *Scheduler
+	every    bool
+	canceled int32
 }
 
 func compare(lhs, rhs interface{}) int {
@@ -22,6 +24,7 @@ func compare(lhs, rhs interface{}) int {
 }
 
 func (j *Job) Cancel() {
+	atomic.StoreInt32(&j.canceled, 1)
 	j.s.removeCh <- j
 }
 
@@ -51,7 +54,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 				i := s.set.Iterator()
 				i.First()
 				j := i.Value().(*Job)
-				go j.j()
+
+				if atomic.LoadInt32(&j.canceled) == 0 {
+					go j.j()
+				}
+
 				s.set.Remove(j)
 				if j.every {
 					j.t = now.UnixNano() + j.i.Nanoseconds()
@@ -109,11 +116,12 @@ func (s *Scheduler) Every(interval time.Duration, j func()) *Job {
 
 func (s *Scheduler) insertJob(interval time.Duration, j func(), every bool) *Job {
 	job := &Job{
-		t:     time.Now().UnixNano() + interval.Nanoseconds(),
-		i:     interval,
-		j:     j,
-		s:     s,
-		every: every,
+		t:        time.Now().UnixNano() + interval.Nanoseconds(),
+		i:        interval,
+		j:        j,
+		s:        s,
+		every:    every,
+		canceled: 0,
 	}
 	s.insertCh <- job
 	return job
