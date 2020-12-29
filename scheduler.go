@@ -83,8 +83,12 @@ func newImpl(s *Scheduler) *impl {
 }
 
 func (impl *impl) run(ctx context.Context) {
+	wg := sync.WaitGroup{}
 	set := treeset.NewWith(compare)
 	timer := time.NewTimer(inactivityInterval)
+
+	defer wg.Wait()
+
 	for {
 		select {
 		case now := <-timer.C:
@@ -98,7 +102,11 @@ func (impl *impl) run(ctx context.Context) {
 				set.Remove(j)
 
 				if atomic.LoadInt32(&j.canceled) == 0 {
-					go j.job()
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						j.job()
+					}()
 
 					if j.every {
 						j.time = now.UnixNano() + j.interval.Nanoseconds()
