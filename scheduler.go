@@ -18,6 +18,7 @@ type Job struct {
 	job      func()
 	every    bool
 	canceled int32
+	wg       sync.WaitGroup
 }
 
 func compare(lhs, rhs interface{}) int {
@@ -26,6 +27,10 @@ func compare(lhs, rhs interface{}) int {
 
 func (j *Job) Cancel() {
 	atomic.StoreInt32(&j.canceled, 1)
+}
+
+func (j *Job) Wait() {
+	j.wg.Wait()
 }
 
 type Scheduler struct {
@@ -83,11 +88,8 @@ func newImpl(s *Scheduler) *impl {
 }
 
 func (impl *impl) run(ctx context.Context) {
-	wg := sync.WaitGroup{}
 	set := treeset.NewWith(compare)
 	timer := time.NewTimer(inactivityInterval)
-
-	defer wg.Wait()
 
 	for {
 		select {
@@ -102,9 +104,9 @@ func (impl *impl) run(ctx context.Context) {
 				set.Remove(j)
 
 				if atomic.LoadInt32(&j.canceled) == 0 {
-					wg.Add(1)
+					j.wg.Add(1)
 					go func() {
-						defer wg.Done()
+						defer j.wg.Done()
 						j.job()
 					}()
 
