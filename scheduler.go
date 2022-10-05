@@ -2,10 +2,11 @@ package scheduler
 
 import (
 	"context"
-	"github.com/emirpasic/gods/sets/treeset"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/emirpasic/gods/sets/treeset"
 )
 
 const chanBuffSize = 10000
@@ -18,7 +19,6 @@ type Job struct {
 	job      func()
 	every    bool
 	canceled int32
-	wg       sync.WaitGroup
 }
 
 func compare(lhs, rhs interface{}) int {
@@ -29,29 +29,32 @@ func (j *Job) Cancel() {
 	atomic.StoreInt32(&j.canceled, 1)
 }
 
-func (j *Job) Wait() {
-	j.wg.Wait()
-}
-
 type Scheduler struct {
 	insertCh chan *Job
+	impls    []*implementaion
 }
 
 func New() *Scheduler {
-	return &Scheduler{
+	s := &Scheduler{
 		insertCh: make(chan *Job, chanBuffSize),
+		impls:    make([]*implementaion, 0),
 	}
+	for i := 0; i < implCount; i++ {
+		s.impls = append(s.impls, newImpl(s))
+	}
+
+	return s
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
 	wg := sync.WaitGroup{}
 
-	for i := 0; i < implCount; i++ {
+	for _, impl := range s.impls {
 		wg.Add(1)
-		go func() {
+		go func(impl *implementaion) {
 			defer wg.Done()
-			newImpl(s).run(ctx)
-		}()
+			impl.run(ctx)
+		}(impl)
 	}
 
 	wg.Wait()
@@ -63,6 +66,12 @@ func (s *Scheduler) Once(interval time.Duration, j func()) *Job {
 
 func (s *Scheduler) Every(interval time.Duration, j func()) *Job {
 	return s.insertJob(interval, j, true)
+}
+
+func (s *Scheduler) WaitRunningJobs() {
+	for _, i := range s.impls {
+		i.waitRunningJobs()
+	}
 }
 
 func (s *Scheduler) insertJob(interval time.Duration, j func(), every bool) *Job {
@@ -77,17 +86,18 @@ func (s *Scheduler) insertJob(interval time.Duration, j func(), every bool) *Job
 	return job
 }
 
-type impl struct {
-	s *Scheduler
+type implementaion struct {
+	s  *Scheduler
+	wg sync.WaitGroup
 }
 
-func newImpl(s *Scheduler) *impl {
-	return &impl{
+func newImpl(s *Scheduler) *implementaion {
+	return &implementaion{
 		s: s,
 	}
 }
 
-func (impl *impl) run(ctx context.Context) {
+func (impl *implementaion) run(ctx context.Context) {
 	set := treeset.NewWith(compare)
 	timer := time.NewTimer(inactivityInterval)
 
@@ -104,9 +114,9 @@ func (impl *impl) run(ctx context.Context) {
 				set.Remove(j)
 
 				if atomic.LoadInt32(&j.canceled) == 0 {
-					j.wg.Add(1)
+					impl.wg.Add(1)
 					go func() {
-						defer j.wg.Done()
+						defer impl.wg.Done()
 						j.job()
 					}()
 
@@ -141,4 +151,8 @@ func (impl *impl) run(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (impl *implementaion) waitRunningJobs() {
+	impl.wg.Wait()
 }
