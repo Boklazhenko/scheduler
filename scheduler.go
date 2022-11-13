@@ -10,7 +10,7 @@ import (
 )
 
 const chanBuffSize = 10000
-const implCount = 10
+const workerCount = 1000
 const inactivityInterval = time.Hour
 
 type Job struct {
@@ -31,16 +31,16 @@ func (j *Job) Cancel() {
 
 type Scheduler struct {
 	insertCh chan *Job
-	impls    []*implementaion
+	impls    []*worker
 }
 
 func New() *Scheduler {
 	s := &Scheduler{
 		insertCh: make(chan *Job, chanBuffSize),
-		impls:    make([]*implementaion, 0),
+		impls:    make([]*worker, 0),
 	}
-	for i := 0; i < implCount; i++ {
-		s.impls = append(s.impls, newImpl(s))
+	for i := 0; i < workerCount; i++ {
+		s.impls = append(s.impls, newWorker(s))
 	}
 
 	return s
@@ -51,7 +51,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 	for _, impl := range s.impls {
 		wg.Add(1)
-		go func(impl *implementaion) {
+		go func(impl *worker) {
 			defer wg.Done()
 			impl.run(ctx)
 		}(impl)
@@ -68,12 +68,6 @@ func (s *Scheduler) Every(interval time.Duration, j func()) *Job {
 	return s.insertJob(interval, j, true)
 }
 
-func (s *Scheduler) WaitRunningJobs() {
-	for _, i := range s.impls {
-		i.waitRunningJobs()
-	}
-}
-
 func (s *Scheduler) insertJob(interval time.Duration, j func(), every bool) *Job {
 	job := &Job{
 		time:     time.Now().UnixNano() + interval.Nanoseconds(),
@@ -86,18 +80,17 @@ func (s *Scheduler) insertJob(interval time.Duration, j func(), every bool) *Job
 	return job
 }
 
-type implementaion struct {
-	s  *Scheduler
-	wg sync.WaitGroup
+type worker struct {
+	s *Scheduler
 }
 
-func newImpl(s *Scheduler) *implementaion {
-	return &implementaion{
+func newWorker(s *Scheduler) *worker {
+	return &worker{
 		s: s,
 	}
 }
 
-func (impl *implementaion) run(ctx context.Context) {
+func (w *worker) run(ctx context.Context) {
 	set := treeset.NewWith(compare)
 	timer := time.NewTimer(inactivityInterval)
 
@@ -114,15 +107,11 @@ func (impl *implementaion) run(ctx context.Context) {
 				set.Remove(j)
 
 				if atomic.LoadInt32(&j.canceled) == 0 {
-					impl.wg.Add(1)
-					go func() {
-						defer impl.wg.Done()
-						j.job()
-					}()
+					j.job()
 
 					if j.every {
 						j.time = now.UnixNano() + j.interval.Nanoseconds()
-						impl.s.insertCh <- j
+						w.s.insertCh <- j
 					}
 				}
 
@@ -133,7 +122,7 @@ func (impl *implementaion) run(ctx context.Context) {
 					timer.Reset(inactivityInterval)
 				}
 			}
-		case j := <-impl.s.insertCh:
+		case j := <-w.s.insertCh:
 			for ; set.Contains(j); j.time++ {
 			}
 			i := set.Iterator()
@@ -151,8 +140,4 @@ func (impl *implementaion) run(ctx context.Context) {
 			return
 		}
 	}
-}
-
-func (impl *implementaion) waitRunningJobs() {
-	impl.wg.Wait()
 }
