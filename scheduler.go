@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,7 +10,7 @@ import (
 	"github.com/emirpasic/gods/sets/treeset"
 )
 
-const chanBuffSize = 10000
+const chanBuffSize = 1000
 const workerCount = 1000
 const inactivityInterval = time.Hour
 
@@ -19,6 +20,7 @@ type Job struct {
 	job      func()
 	every    bool
 	canceled int32
+	w        *worker
 }
 
 func compare(lhs, rhs interface{}) int {
@@ -27,20 +29,19 @@ func compare(lhs, rhs interface{}) int {
 
 func (j *Job) Cancel() {
 	atomic.StoreInt32(&j.canceled, 1)
+	j.w.cancelCh <- j
 }
 
 type Scheduler struct {
-	insertCh chan *Job
-	impls    []*worker
+	workers []*worker
 }
 
 func New() *Scheduler {
 	s := &Scheduler{
-		insertCh: make(chan *Job, chanBuffSize),
-		impls:    make([]*worker, 0),
+		workers: make([]*worker, workerCount),
 	}
 	for i := 0; i < workerCount; i++ {
-		s.impls = append(s.impls, newWorker(s))
+		s.workers[i] = newWorker()
 	}
 
 	return s
@@ -49,7 +50,7 @@ func New() *Scheduler {
 func (s *Scheduler) Run(ctx context.Context) {
 	wg := sync.WaitGroup{}
 
-	for _, impl := range s.impls {
+	for _, impl := range s.workers {
 		wg.Add(1)
 		go func(impl *worker) {
 			defer wg.Done()
@@ -69,24 +70,28 @@ func (s *Scheduler) Every(interval time.Duration, j func()) *Job {
 }
 
 func (s *Scheduler) insertJob(interval time.Duration, j func(), every bool) *Job {
+	w := s.workers[rand.Intn(len(s.workers))]
 	job := &Job{
 		time:     time.Now().UnixNano() + interval.Nanoseconds(),
 		interval: interval,
 		job:      j,
 		every:    every,
 		canceled: 0,
+		w:        w,
 	}
-	s.insertCh <- job
+	w.insertCh <- job
 	return job
 }
 
 type worker struct {
-	s *Scheduler
+	insertCh chan *Job
+	cancelCh chan *Job
 }
 
-func newWorker(s *Scheduler) *worker {
+func newWorker() *worker {
 	return &worker{
-		s: s,
+		insertCh: make(chan *Job, chanBuffSize),
+		cancelCh: make(chan *Job, chanBuffSize),
 	}
 }
 
@@ -111,7 +116,7 @@ func (w *worker) run(ctx context.Context) {
 
 					if j.every {
 						j.time = now.UnixNano() + j.interval.Nanoseconds()
-						w.s.insertCh <- j
+						w.insertCh <- j
 					}
 				}
 
@@ -122,7 +127,7 @@ func (w *worker) run(ctx context.Context) {
 					timer.Reset(inactivityInterval)
 				}
 			}
-		case j := <-w.s.insertCh:
+		case j := <-w.insertCh:
 			for ; set.Contains(j); j.time++ {
 			}
 			i := set.Iterator()
@@ -133,6 +138,24 @@ func (w *worker) run(ctx context.Context) {
 				timer.Reset(time.Duration(j.time - time.Now().UnixNano()))
 			}
 			set.Add(j)
+		case j := <-w.cancelCh:
+			set.Remove(j)
+
+			i := set.Iterator()
+
+			if i.First() && i.Value().(*Job).time < j.time {
+				continue
+			}
+
+			if !timer.Stop() {
+				<-timer.C
+			}
+
+			if i.First() {
+				timer.Reset(time.Duration(i.Value().(*Job).time - time.Now().UnixNano()))
+			} else {
+				timer.Reset(inactivityInterval)
+			}
 		case <-ctx.Done():
 			if !timer.Stop() {
 				<-timer.C
