@@ -61,15 +61,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	wg.Wait()
 }
 
-func (s *Scheduler) Once(interval time.Duration, j func()) *Job {
-	return s.insertJob(interval, j, false)
+func (s *Scheduler) Once(ctx context.Context, interval time.Duration, j func()) (*Job, error) {
+	return s.insertJob(ctx, interval, j, false)
 }
 
-func (s *Scheduler) Every(interval time.Duration, j func()) *Job {
-	return s.insertJob(interval, j, true)
+func (s *Scheduler) Every(ctx context.Context, interval time.Duration, j func()) (*Job, error) {
+	return s.insertJob(ctx, interval, j, true)
 }
 
-func (s *Scheduler) insertJob(interval time.Duration, j func(), every bool) *Job {
+func (s *Scheduler) insertJob(ctx context.Context, interval time.Duration, j func(), every bool) (*Job, error) {
 	w := s.workers[rand.Intn(len(s.workers))]
 	job := &Job{
 		time:     time.Now().UnixNano() + interval.Nanoseconds(),
@@ -79,8 +79,13 @@ func (s *Scheduler) insertJob(interval time.Duration, j func(), every bool) *Job
 		canceled: 0,
 		w:        w,
 	}
-	w.insertCh <- job
-	return job
+
+	select {
+	case w.insertCh <- job:
+		return job, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 type worker struct {
