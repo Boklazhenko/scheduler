@@ -10,8 +10,8 @@ import (
 	"github.com/emirpasic/gods/sets/treeset"
 )
 
-const chanBuffSize = 1000
-const workerCount = 1000
+const chanBuffSize = 100
+const workerCount = 100
 const inactivityInterval = time.Hour
 
 type Job struct {
@@ -37,11 +37,15 @@ type Scheduler struct {
 }
 
 func New() *Scheduler {
+	return NewWithParams(workerCount, chanBuffSize)
+}
+
+func NewWithParams(workerCount, chanBuffSize int) *Scheduler {
 	s := &Scheduler{
 		workers: make([]*worker, workerCount),
 	}
 	for i := 0; i < workerCount; i++ {
-		s.workers[i] = newWorker()
+		s.workers[i] = newWorker(chanBuffSize)
 	}
 
 	return s
@@ -93,7 +97,7 @@ type worker struct {
 	cancelCh chan *Job
 }
 
-func newWorker() *worker {
+func newWorker(chanBuffSize int) *worker {
 	return &worker{
 		insertCh: make(chan *Job, chanBuffSize),
 		cancelCh: make(chan *Job, chanBuffSize),
